@@ -60,7 +60,44 @@ using System.Collections.Concurrent;
 var queue1 = new BlockingCollection<Message>(2); //очередь первого потока
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
-// Здесь писать решение
+var queue1Signal = new AutoResetEvent(false);
+var queue2Signal = new AutoResetEvent(false);
+
+int messagesCount = 100;
+
+void Proccess(object state) {
+    var queue = (BlockingCollection<Message>)state;
+    
+    for (int i = 0; i < messagesCount; i++) {
+        if (queue == queue1) {
+            queue1Signal.WaitOne();
+            Message message = queue1.Take();
+            message.Handle();
+            queue2.Add(new Message());
+            queue2Signal.Set();
+        }
+        else if (queue == queue2) {
+            queue2Signal.WaitOne();
+            Message message = queue2.Take();
+            message.Handle();
+            if (i < messagesCount - 1) {
+                queue1.Add(new Message());
+                queue1Signal.Set();
+            }
+        }
+    }
+}
+
+var thread1 = new Thread(Proccess);
+var thread2 = new Thread(Proccess);
+thread1.Start(queue1);
+thread2.Start(queue2);
+
+queue1.Add(new Message());
+queue1Signal.Set();
+
+thread1.Join();
+thread2.Join();
 
 #!csharp
 
