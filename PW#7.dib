@@ -17,10 +17,199 @@
 
 #!csharp
 
+using System.Threading;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+
+
 public interface ICommand
 {
     void Execute();
 }
+
+public abstract class SimpleCommand : ICommand 
+{
+    public Thread currentThread;
+    public SimpleCommand(Thread currentThread) 
+    {
+        this.currentThread = currentThread;
+    }
+
+    public abstract void Execute();
+}
+
+public class WaitCommand : SimpleCommand 
+{
+    public WaitCommand(Thread currentThread) : base(currentThread) {}
+    public override void Execute() 
+    {
+        Thread.Sleep(2000);
+        Console.WriteLine("OK");
+    }
+}
+
+public class CancelCommand: SimpleCommand
+{
+    public CancelCommand(Thread currentThread) : base(currentThread) {}
+    public override void Execute() {}
+}
+
+
+class ServerThread
+{
+    public Thread thread;
+    public CommandsCollection commands;
+    bool is_soft_stop;
+    bool is_hard_stop;
+
+    public ServerThread(CommandsCollection commands) 
+    {
+        thread = new Thread(ExecuteCommands);
+        this.commands = commands;
+        this.is_soft_stop = false;
+        this.is_hard_stop = false;
+    }
+
+    void ExecuteCommands() 
+    {
+        while (!is_hard_stop) 
+        {
+            SimpleCommand command;
+            bool flag = commands.TryTake(out command);
+            if (!flag) {
+                if (is_soft_stop) 
+                {
+                    break;
+                }
+                command = commands.Take();
+            }
+            if (command.GetType() == typeof(CancelCommand) && command.currentThread == Thread.CurrentThread) 
+            {
+                break;
+            }
+            try 
+            {
+                command.Execute();
+            }
+            catch (Exception ex) 
+            {
+                ExceptionHandler(ex);
+            }
+            
+        }
+    }
+
+    public void Start() 
+    {
+        thread.Start();
+    }
+
+    public void Join()
+    {
+        thread.Join();
+    }
+    public void SoftStop() 
+    {  
+        is_soft_stop = true; 
+        commands.AddCancelMessage(Thread.CurrentThread);
+    }
+    
+    public void HardStop() 
+    {
+        is_hard_stop = true;
+        commands.AddCancelMessage(Thread.CurrentThread);
+    }
+
+    void ExceptionHandler(Exception ex) 
+    {
+        Console.WriteLine(ex);
+    }
+}
+
+class CommandsCollection 
+{
+    BlockingCollection<SimpleCommand> blockingCollection;
+    ConcurrentQueue<SimpleCommand> concurrentQueue;
+
+    public CommandsCollection() 
+    {
+        this.blockingCollection = new BlockingCollection<SimpleCommand>();
+        this.concurrentQueue = new ConcurrentQueue<SimpleCommand>();
+    }
+    public void Add(SimpleCommand command) 
+    {
+        blockingCollection.Add(command);
+        concurrentQueue.Enqueue(command);
+    }
+    public SimpleCommand Take() 
+    {
+        SimpleCommand command = blockingCollection.Take();
+        concurrentQueue.TryDequeue(out command);
+        return command;
+    }
+    public bool TryTake(out SimpleCommand command) 
+    {
+        bool flag = blockingCollection.TryTake(out command);
+        concurrentQueue.TryDequeue(out command);
+        return flag;
+    }
+    public void AddCancelMessage(Thread thread) 
+    {
+        SimpleCommand command;
+        if (!concurrentQueue.TryPeek(out command)) { // у BlockingCollection нет TryPeek, поэтому используем вместе с ConcurrentQueue
+            blockingCollection.Add(new CancelCommand(thread));
+        }
+    }
+}
+
+#!csharp
+
+// Test 1 - soft stop для обоих потоков, оба потока обработают все сообщения
+var commands = new CommandsCollection();
+
+var serverThread1 = new ServerThread(commands);
+var serverThread2 = new ServerThread(commands);
+
+commands.Add(new WaitCommand(Thread.CurrentThread));
+commands.Add(new WaitCommand(Thread.CurrentThread));
+commands.Add(new WaitCommand(Thread.CurrentThread));
+
+serverThread1.Start();
+serverThread2.Start();
+serverThread1.SoftStop();
+serverThread2.SoftStop();
+
+commands.Add(new WaitCommand(Thread.CurrentThread));
+commands.Add(new WaitCommand(Thread.CurrentThread));
+
+serverThread1.Join();
+serverThread2.Join();
+
+#!csharp
+
+// Test 2 - hard stop для первого потока через 1 секунду, первый поток успеет обработать одно сообщение и остановится,
+// остальные обработает второй поток за ожидаемое время (параллельно 2 сообщения и последовательно 3 оставшихся)
+var commands = new CommandsCollection();
+
+var serverThread1 = new ServerThread(commands);
+var serverThread2 = new ServerThread(commands);
+
+commands.Add(new WaitCommand(Thread.CurrentThread));
+commands.Add(new WaitCommand(Thread.CurrentThread));
+commands.Add(new WaitCommand(Thread.CurrentThread));
+
+serverThread1.Start();
+serverThread2.Start();
+Thread.Sleep(1000);
+serverThread1.HardStop();
+
+commands.Add(new WaitCommand(Thread.CurrentThread));
+commands.Add(new WaitCommand(Thread.CurrentThread));
+
+serverThread2.SoftStop();
+
+serverThread1.Join();
+serverThread2.Join();
 
 #!markdown
 
