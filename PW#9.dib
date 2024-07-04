@@ -1,0 +1,243 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №9. Реализация длительных операций.
+
+**Цель:** Предоставить возможность выполннеия команд, для полного завершения которых требуется более одного вызова Execute.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Выполнять длительные опреации в отдельном потоке без монопольного использования потока в течение длительного времени.
+3. Прерывать выполнение таких команд. 
+
+
+## Задание.
+Если для полного выполнения командв потребуется более одного вызова Execute, необходимо такую команду добавить в планировщик.
+
+Для иллюстрации выполнненой работы определить команду
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+
+
+public interface ICommand
+{
+    void Execute();
+}
+
+public abstract class SimpleCommand : ICommand 
+{
+    public Thread currentThread;
+    public SimpleCommand(Thread currentThread) 
+    {
+        this.currentThread = currentThread;
+    }
+
+    public abstract void Execute();
+}
+
+public class WaitCommand : SimpleCommand 
+{
+    public WaitCommand(Thread currentThread) : base(currentThread) {}
+    public override void Execute() 
+    {
+        Thread.Sleep(200);
+        Console.WriteLine("OK");
+    }
+}
+
+public class CancelCommand: SimpleCommand
+{
+    public CancelCommand(Thread currentThread) : base(currentThread) {}
+    public override void Execute() {}
+}
+
+
+class CTask{
+    public int run_count_need;
+    public SimpleCommand command;
+    public CTask(SimpleCommand command, int run_count_need){
+        this.command = command;
+        this.run_count_need = run_count_need;
+    }
+}
+
+interface IScheduler
+{
+    bool HasCommand();
+    CTask Select();
+    void Add(CTask cmd);
+}
+
+class Scheduler : IScheduler
+{
+    BlockingCollection<CTask> tasks = new BlockingCollection<CTask>();
+    public bool HasCommand()
+    {
+        return (tasks.Count > 0);
+    }
+    public CTask Select(){
+        return tasks.Take();
+    }
+    public void Add(CTask command)
+    {
+        tasks.Add(command);
+    }
+}
+
+
+
+
+class ServerThread
+{
+    public Thread thread;
+    public CommandsCollection commands;
+    bool is_soft_stop;
+    bool is_hard_stop;
+    Scheduler sh;
+    public bool need_delivery;
+
+    public ServerThread(CommandsCollection commands) 
+    {
+        thread = new Thread(ExecuteCommands);
+        this.commands = commands;
+        this.is_soft_stop = false;
+        this.is_hard_stop = false;
+        this.sh = new Scheduler();
+        this.need_delivery = true;
+    }
+
+    void DeliveryThread(){
+        Thread d = new Thread(new ThreadStart(() => {
+            while (need_delivery){
+                sh.Add(commands.Take());
+            }
+        }));
+        d.Start();
+    }
+
+    void ExecuteCommands() 
+    {
+        DeliveryThread();
+        Thread.Sleep(100);
+        while (!is_hard_stop) 
+        {   
+            CTask ctask = sh.Select();
+        
+            ctask.run_count_need--;
+            SimpleCommand command = ctask.command;
+
+            if (command.GetType() == typeof(CancelCommand) && command.currentThread == Thread.CurrentThread) 
+            {
+                break;
+            }
+            try 
+            {
+                command.Execute();
+            }
+            catch (Exception ex) 
+            {
+                ExceptionHandler(ex);
+            }
+            if (this.is_soft_stop) {
+                if ((this.commands.Count() == 0) && !sh.HasCommand()) {Console.WriteLine("SoftStop"); break;}
+            }
+
+            if (ctask.run_count_need != 0) 
+            {
+                sh.Add(ctask);
+            }
+            
+        }
+        need_delivery = false;
+    }
+
+    public void Start() 
+    {
+        thread.Start();
+    }
+
+    public void Join()
+    {
+        thread.Join();
+    }
+    public void SoftStop() 
+    {  
+        is_soft_stop = true; 
+        commands.AddCancelMessage(Thread.CurrentThread);
+    }
+    
+    public void HardStop() 
+    {
+        is_hard_stop = true;
+        commands.AddCancelMessage(Thread.CurrentThread);
+    }
+
+    void ExceptionHandler(Exception ex) 
+    {
+        Console.WriteLine(ex);
+    }
+}
+
+class CommandsCollection 
+{
+    BlockingCollection<CTask> blockingCollection;
+    ConcurrentQueue<CTask> concurrentQueue;
+
+    public CommandsCollection() 
+    {
+        this.blockingCollection = new BlockingCollection<CTask>();
+        this.concurrentQueue = new ConcurrentQueue<CTask>();
+    }
+    public void Add(CTask command) 
+    {
+        blockingCollection.Add(command);
+        concurrentQueue.Enqueue(command);
+    }
+    public CTask Take() 
+    {
+        CTask command = blockingCollection.Take();
+        concurrentQueue.TryDequeue(out command);
+        return command;
+    }
+    public bool TryTake(out CTask command) 
+    {
+        bool flag = blockingCollection.TryTake(out command);
+        concurrentQueue.TryDequeue(out command);
+        return flag;
+    }
+    public void AddCancelMessage(Thread thread) 
+    {
+        CTask command;
+        if (!concurrentQueue.TryPeek(out command)) { // у BlockingCollection нет TryPeek, поэтому используем вместе с ConcurrentQueue
+            blockingCollection.Add(new CTask(new CancelCommand(thread), 1));
+        }
+    }
+    public int Count() 
+    {
+        return blockingCollection.Count;
+    }
+}
+
+#!markdown
+
+Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
+
+#!csharp
+
+var commands = new CommandsCollection();
+
+for (int i =0; i < 5; i++)
+{
+    commands.Add(new CTask(new WaitCommand(Thread.CurrentThread), 3));
+}
+var serverThread1 = new ServerThread(commands);
+
+serverThread1.Start();
+serverThread1.SoftStop();
+serverThread1.Join();
