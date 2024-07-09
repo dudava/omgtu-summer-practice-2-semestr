@@ -41,6 +41,196 @@
 
 // здесь писать код
 
+#!csharp
+
+using System.Collections.Concurrent;
+using System.Threading;
+
+long messagesCount = 1000000;
+BlockingCollection<int> blockingCollection = [];
+ConcurrentQueue<int> concurrentQueue = [];
+var producerStarted = new ManualResetEvent(false);
+var consumerStarted = new ManualResetEvent(false);
+
+
+class Counter {
+    public static int counter = 0;
+
+    public static void Handle(object obj) {
+        for (int i = 0; i < 100; i++) {
+            double c = i * (i / 359);
+        }
+        Interlocked.Increment(ref counter);
+    }
+
+    public static void Clear() {
+        counter = 0;
+    }
+}
+
+
+void ProducerBlockingCollection() {
+    producerStarted.Set();
+    for (int i = 0; i < messagesCount; i++) {
+        blockingCollection.Add(new int());
+    }
+}
+
+void ConsumerBlockingCollection() {
+    consumerStarted.Set();
+    int item;
+    for (int i = 0; i < messagesCount; i++) {
+        item = blockingCollection.Take();
+        Counter.Handle(item);
+    }
+}
+
+void ProducerConcurrentQueue() {
+    producerStarted.Set();
+    for (int i = 0; i < messagesCount; i++) {    
+        concurrentQueue.Enqueue(new int());
+    }
+    concurrentQueue.Enqueue(-1);
+}
+
+void ConsumerConcurrentQueue() {
+    consumerStarted.Set();
+    int item;
+    concurrentQueue.TryDequeue(out item);
+    while (item != -1) {
+        bool flag = concurrentQueue.TryDequeue(out item);
+        if (flag) Counter.Handle(item);
+    }
+}
+
+void ProducerConsumerQueue() {
+    Queue<int> queue = new Queue<int>();
+    for (int i = 0; i < messagesCount; i++) {
+        queue.Enqueue(new int());
+    }
+    int item;
+    for (int i = 0; i < queue.Count; i++) {
+        item = queue.Dequeue();
+        Counter.Handle(item);
+    }
+}
+
+#!csharp
+
+using System.Diagnostics;
+
+long countPCBlockingCollection() {
+    Stopwatch watch = new Stopwatch();
+    var thread1 = new Thread(ProducerBlockingCollection);
+    var thread2 = new Thread(ConsumerBlockingCollection);
+    thread1.Start();
+    thread2.Start();
+
+    producerStarted.WaitOne();
+    consumerStarted.WaitOne();
+    watch.Start();
+    thread1.Join();
+    thread2.Join();
+    watch.Stop();
+
+    Counter.Clear();
+    producerStarted.Reset();
+    consumerStarted.Reset();
+
+    return watch.ElapsedMilliseconds;
+}
+
+long countPCConcurrentQueue() {
+    Stopwatch watch = new Stopwatch();
+    var thread1 = new Thread(ProducerConcurrentQueue);
+    var thread2 = new Thread(ConsumerConcurrentQueue);
+    thread1.Start();
+    thread2.Start();
+
+    producerStarted.WaitOne();
+    consumerStarted.WaitOne();
+    watch.Start();
+    thread1.Join();
+    thread2.Join();
+    watch.Stop();
+
+    Counter.Clear();
+    producerStarted.Reset();
+    consumerStarted.Reset();
+
+    return watch.ElapsedMilliseconds;
+}
+
+long countPCQueue() {
+    Stopwatch watch = new Stopwatch();
+    watch.Start();
+    ProducerConsumerQueue();
+    watch.Stop();
+
+    Counter.Clear();
+    return watch.ElapsedMilliseconds;
+}
+
+#!csharp
+
+Console.WriteLine(countPCBlockingCollection());
+Console.WriteLine(countPCConcurrentQueue());
+Console.WriteLine(countPCQueue());
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.35"
+using Microsoft.DotNet.Interactive.Formatting;
+using System.Diagnostics;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+double BlockingCollectionMeanResult, ConcurrentQueueMeanResult, QueueMeanResult;
+List<long> results = [];
+int testsCount = 10;
+
+for (int i = 0; i < testsCount; i++) {
+    results.Add(countPCBlockingCollection());
+}
+BlockingCollectionMeanResult = results.Sum() / testsCount;
+results.Clear();
+
+for (int i = 0; i < testsCount; i++) {
+    results.Add(countPCConcurrentQueue());
+}
+ConcurrentQueueMeanResult = results.Sum() / testsCount;
+results.Clear();
+
+for (int i = 0; i < testsCount; i++) {
+    results.Add(countPCQueue());
+}
+QueueMeanResult = results.Sum() / testsCount;
+results.Clear();
+
+
+
+ScottPlot.Plot myPlot = new();
+
+myPlot.Add.Bar(position: 1, value: BlockingCollectionMeanResult);
+myPlot.Add.Bar(position: 2, value: ConcurrentQueueMeanResult);
+myPlot.Add.Bar(position: 3, value: QueueMeanResult);
+
+ScottPlot.Tick[] ticks = {
+    new (1, "BlockingCollection"),
+    new (2, "ConcurrentQueue"),
+    new (3, "Queue<T> (one-thread)"),
+};
+
+myPlot.Axes.Bottom.TickGenerator = new ScottPlot.TickGenerators.NumericManual(ticks);
+myPlot.Title("Performance comparison");
+myPlot
+
 #!markdown
 
 ## Вывод
+
+#!csharp
+
+// ConcurrentQueue оказалась быстрее BlockingCollection примерно на 40%, 
+// но все равно медленнее непотокобезопасной очереди и ее скорость составляет примерно 50% от обычной очереди.
